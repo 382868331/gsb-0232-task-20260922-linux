@@ -27,6 +27,17 @@ class TranscriptFormatError(ProtocolError):
     """
 
 
+class BatchError(ProtocolError):
+    """批次级错误：批次输入/批次转录封套不合法。
+
+    典型场景：实例数为 0 或超限、实例 ID 缺失/重复/类型非法、
+    :class:`~sumcheck.batch.BoundTranscript` 的 ID 与对应位置的实例不一致
+    （把一份消息塞进另一个实例的槽位）等。
+    与“某实例转录结构合法但主张为假”相区别：后者聚合进
+    :class:`~sumcheck.batch.BatchResult`，不抛异常。
+    """
+
+
 class BudgetExhausted(SumcheckError, RuntimeError):
     """布尔立方体枚举的求值预算耗尽。
 

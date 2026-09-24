@@ -6,6 +6,7 @@
 """
 
 from .errors import (
+    BatchError,
     BudgetExhausted,
     PolynomialError,
     ProtocolError,
@@ -14,6 +15,17 @@ from .errors import (
 )
 from .field import P
 from .polynomial import MAX_TERMS, MAX_VARS, MultilinearPoly, Term
+from .batch import (
+    MAX_INSTANCES,
+    BatchInstance,
+    BatchResult,
+    BatchTranscript,
+    BoundTranscript,
+    InstanceResult,
+    independent_boolean_sum,
+    prove_batch,
+    verify_batch,
+)
 from .protocol import (
     BUDGET_NOTE,
     RoundMessage,
@@ -39,5 +51,16 @@ __all__ = [
     "ProtocolError",
     "TranscriptFormatError",
     "BudgetExhausted",
+    "BatchError",
     "BUDGET_NOTE",
+    # 多实例批处理
+    "MAX_INSTANCES",
+    "BatchInstance",
+    "BatchTranscript",
+    "BoundTranscript",
+    "InstanceResult",
+    "BatchResult",
+    "prove_batch",
+    "verify_batch",
+    "independent_boolean_sum",
 ]
