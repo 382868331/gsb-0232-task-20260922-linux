@@ -18,11 +18,17 @@ import time
 from dataclasses import replace
 
 from sumcheck import (
+    BatchError,
+    BatchInstance,
     MultilinearPoly,
+    RoundMessage,
     Term,
+    Transcript,
     TranscriptFormatError,
     prove,
+    prove_batch,
     verify,
+    verify_batch,
 )
 
 P = 101
@@ -127,7 +133,119 @@ def main() -> None:
         raise AssertionError("非法次数必须被拒绝")
 
     print()
-    print("全部演示完成：1 个正常接受、1 个上限规模接受、1 个篡改拒绝、2 个结构异常。")
+    demo_batch()
+
+    print()
+    print("全部演示完成：单实例 1 个正常接受、1 个上限规模接受、1 个篡改拒绝、"
+          "2 个结构异常；批处理 1 个多规模整批接受、1 个边界批次、"
+          "1 个实例失败致整批失败、1 个跨实例冒用、1 个直接求和抓假、1 个非法批次。")
+
+
+def demo_batch() -> None:
+    """多实例批处理：不同 n 的实例逐实例运行，独立 ID 绑定 + 小域直接求和核验。"""
+    print("=" * 70)
+    print("演示 5：多实例批处理（不同变量数，各自保留 n 与次数上界）")
+    print("=" * 70)
+    # inst-a: f=1+x0*x1（2 变量，立方体和 5）
+    # inst-b: f=3+2*x0+x1+x0*x2（3 变量）
+    # inst-c: 仅 1 变量 f=x0（立方体和 1）
+    instances = [
+        BatchInstance("inst-a", build_poly(2, [(1, ()), (1, (0, 1))]), (2, 3)),
+        BatchInstance("inst-b",
+                      build_poly(3, [(3, ()), (2, (0,)), (1, (1,)), (1, (0, 2))]),
+                      (17, 42, 3)),
+        BatchInstance("inst-c", build_poly(1, [(1, (0,))]), (5,)),
+    ]
+    t0 = time.perf_counter()
+    produced = prove_batch(instances)
+    # 模拟 prover 与 verifier 分离：只交出 {ID: 转录}，verifier 独立重核
+    report = verify_batch(instances, produced.transcript_by_id())
+    elapsed = time.perf_counter() - t0
+    print(report.pretty())
+    print(f"整批结论 accepted={report.accepted}（真实计算耗时 {elapsed * 1000:.2f} ms）")
+    assert report.accepted and report.count == 3
+
+    print()
+    print("-" * 70)
+    print("边界：一次性 256 个 n=1 实例（批大小上限 MAX_BATCH_INSTANCES）")
+    print("-" * 70)
+    boundary = [
+        BatchInstance(f"m{k:03d}", build_poly(1, [(1, (0,))]), (k % P,))
+        for k in range(256)
+    ]
+    t0 = time.perf_counter()
+    boundary_report = prove_batch(boundary)
+    elapsed = time.perf_counter() - t0
+    print(f"{boundary_report.accepted_count}/{boundary_report.count} 接受，"
+          f"accepted={boundary_report.accepted}（真实计算耗时 {elapsed * 1000:.2f} ms）")
+    assert boundary_report.accepted
+
+    print()
+    print("-" * 70)
+    print("失败用例 1：篡改 inst-b 第 1 轮一次项系数 —— 整批失败，inst-a/inst-c 仍接受")
+    print("-" * 70)
+    mapping = produced.transcript_by_id()
+    tr_b = mapping["inst-b"]
+    msg = tr_b.rounds[1]
+    mapping["inst-b"] = replace(
+        tr_b,
+        rounds=tuple(
+            [replace(msg, coeffs=(msg.coeffs[0], (msg.coeffs[1] + 1) % P))
+             if i == 1 else m for i, m in enumerate(tr_b.rounds)]
+        ),
+    )
+    fail_report = verify_batch(instances, mapping)
+    print(f"整批 accepted={fail_report.accepted}，"
+          f"接受 {fail_report.accepted_count}/{fail_report.count}")
+    print(fail_report.by_id()["inst-b"].pretty())
+    assert not fail_report.accepted
+    assert fail_report.by_id()["inst-a"].accepted
+    assert fail_report.by_id()["inst-c"].accepted
+
+    print()
+    print("-" * 70)
+    print("失败用例 2：跨实例冒用 —— 把 inst-c 的转录当作 inst-a 提交（ID 绑定拦截）")
+    print("-" * 70)
+    good_map = produced.transcript_by_id()
+    swapped = {"inst-a": good_map["inst-c"], "inst-b": good_map["inst-b"],
+               "inst-c": good_map["inst-a"]}
+    try:
+        verify_batch(instances, swapped)
+    except BatchError as exc:
+        print(f"如预期抛出 BatchError：{exc}")
+    else:  # pragma: no cover - 演示断言
+        raise AssertionError("跨实例冒用必须被拒绝")
+
+    print()
+    print("-" * 70)
+    print("失败用例 3：小域直接求和抓假 —— f=x0、挑战 r0=5，作弊 g0(t)≡5、主张 10")
+    print("-" * 70)
+    # 闭合：g(0)+g(1)=10；最终：g(5)=5=f(5)，固定挑战下单实例 verify 会被绕过；
+    # 但真实立方体和为 f(0)+f(1)=1，批处理直接枚举求和必然拒绝。
+    cheat_poly = build_poly(1, [(1, (0,))])
+    cheat_tr = Transcript(
+        1, 10, (RoundMessage(0, (5,), 10, None, None),), (5,), 5,
+        instance_id="cheat",
+    )
+    single_accepts = verify(cheat_poly, cheat_tr).accepted
+    cheat_report = verify_batch(
+        [BatchInstance("cheat", cheat_poly, (5,))], {"cheat": cheat_tr}
+    )
+    print(f"旧单实例 verify 结论 accepted={single_accepts}（固定挑战、无独立求和）")
+    print(cheat_report.by_id()["cheat"].pretty())
+    assert single_accepts and not cheat_report.accepted
+
+    print()
+    print("-" * 70)
+    print("失败用例 4：非法批次结构 —— 空批次 / 重复实例 ID")
+    print("-" * 70)
+    for bad, label in (([], "空批次"), (instances[:1] + instances[:1], "重复 ID")):
+        try:
+            prove_batch(bad)
+        except BatchError as exc:
+            print(f"{label} -> BatchError：{exc}")
+        else:  # pragma: no cover - 演示断言
+            raise AssertionError(f"{label} 必须被拒绝")
 
 
 if __name__ == "__main__":

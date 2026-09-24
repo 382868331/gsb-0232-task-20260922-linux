@@ -5,7 +5,16 @@
 也不具备任何生产级密码学安全性。
 """
 
+from .batch import (
+    MAX_BATCH_INSTANCES,
+    BatchInstance,
+    BatchReport,
+    InstanceReport,
+    prove_batch,
+    verify_batch,
+)
 from .errors import (
+    BatchError,
     BudgetExhausted,
     PolynomialError,
     ProtocolError,
@@ -40,4 +49,12 @@ __all__ = [
     "TranscriptFormatError",
     "BudgetExhausted",
     "BUDGET_NOTE",
+    # 多实例批处理
+    "MAX_BATCH_INSTANCES",
+    "BatchInstance",
+    "BatchReport",
+    "InstanceReport",
+    "prove_batch",
+    "verify_batch",
+    "BatchError",
 ]

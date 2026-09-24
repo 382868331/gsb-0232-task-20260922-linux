@@ -27,6 +27,16 @@ class TranscriptFormatError(ProtocolError):
     """
 
 
+class BatchError(ProtocolError):
+    """批处理输入或批次结构不合法（空批次、实例 ID 重复/缺失/不匹配等）。
+
+    仍是 :class:`ProtocolError` 的子类，调用者既可单独捕获批次问题，
+    也可统一按协议错误处理。与“批次结构合法但某个实例主张为假”相区别：
+    后者由 :class:`sumcheck.batch.BatchReport` 以 ``accepted=False`` 的
+    逐实例报告返回，而不是抛出异常。
+    """
+
+
 class BudgetExhausted(SumcheckError, RuntimeError):
     """布尔立方体枚举的求值预算耗尽。
 

@@ -77,18 +77,28 @@ class RoundMessage:
 
 @dataclass(frozen=True)
 class Transcript:
-    """完整协议转录：不可变值对象，所有数值均为 F_p 规范整数。"""
+    """完整协议转录：不可变值对象，所有数值均为 F_p 规范整数。
+
+    ``instance_id`` 用于多实例批处理时把转录显式绑定到某个实例；单实例
+    协议（:func:`prove`/:func:`verify`）不使用它，默认为 ``None``。
+    """
 
     num_vars: int
     initial_claim: int
     rounds: tuple[RoundMessage, ...]
     challenges: tuple[int, ...]
     final_claim: int
+    instance_id: str | None = None
 
     def pretty(self) -> str:
         """返回便于阅读/打印的转录文本（不是预录结论，全部来自真实计算）。"""
-        lines = [
-            f"sum-check 转录 (F_{P}, {self.num_vars} 个变量)",
+        id_line = (
+            [f"实例 ID: {self.instance_id}",
+             f"sum-check 转录 (F_{P}, {self.num_vars} 个变量)"]
+            if self.instance_id is not None
+            else [f"sum-check 转录 (F_{P}, {self.num_vars} 个变量)"]
+        )
+        lines = id_line + [
             f"初始主张 C = g0(0)+g0(1) = {self.initial_claim}",
         ]
         for msg in self.rounds:
