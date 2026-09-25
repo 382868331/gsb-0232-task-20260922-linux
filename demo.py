@@ -19,8 +19,11 @@ from dataclasses import replace
 
 from sumcheck import (
     MultilinearPoly,
+    StreamStateError,
+    StreamingVerifier,
     Term,
     TranscriptFormatError,
+    VerificationFailed,
     prove,
     verify,
 )
@@ -127,7 +130,48 @@ def main() -> None:
         raise AssertionError("非法次数必须被拒绝")
 
     print()
-    print("全部演示完成：1 个正常接受、1 个上限规模接受、1 个篡改拒绝、2 个结构异常。")
+    print("=" * 70)
+    print("演示 5：流式验证状态机 —— 逐轮提交、暂停恢复、拒绝终态")
+    print("=" * 70)
+    # 与演示 1 同一多项式与挑战，改用逐轮交互形式验证
+    stream = StreamingVerifier(poly, transcript.initial_claim)
+    for i, msg in enumerate(transcript.rounds):
+        stream.submit_round(msg.coeffs)
+        print(f"  轮 {i}: 提交系数 {msg.coeffs} 通过，"
+              f"提交挑战 {transcript.challenges[i]}")
+        stream.submit_challenge(transcript.challenges[i])
+    print(f"结论: state={stream.state}，最终主张={stream.current_claim}")
+    assert stream.state == "accepted"
+
+    # 暂停/恢复：导出公开转录状态，从头重放检查后继续
+    stream2 = StreamingVerifier(poly, transcript.initial_claim)
+    stream2.submit_round(transcript.rounds[0].coeffs)
+    stream2.submit_challenge(transcript.challenges[0])
+    saved = stream2.export_state().to_dict()
+    resumed = StreamingVerifier.restore(poly, saved)
+    print(f"  暂停于轮 1 前，导出状态 {saved['phase']}，恢复后相位={resumed.state}")
+    for i in (1, 2):
+        resumed.submit_round(transcript.rounds[i].coeffs)
+        resumed.submit_challenge(transcript.challenges[i])
+    assert resumed.state == "accepted"
+    print(f"结论: 恢复后完成验证，state={resumed.state}")
+
+    # 拒绝终态：篡改轮 0 系数 -> VerificationFailed，之后送入被拒绝
+    stream3 = StreamingVerifier(poly, transcript.initial_claim)
+    try:
+        stream3.submit_round((transcript.rounds[0].coeffs[0] + 1,
+                              transcript.rounds[0].coeffs[1]))
+    except VerificationFailed as exc:
+        print(f"如预期进入拒绝终态：{exc}")
+    assert stream3.state == "rejected"
+    try:
+        stream3.submit_challenge(0)
+    except StreamStateError as exc:
+        print(f"拒绝终态不可恢复：{exc}")
+
+    print()
+    print("全部演示完成：1 个正常接受、1 个上限规模接受、1 个篡改拒绝、"
+          "2 个结构异常、1 组流式状态机（接受/恢复/拒绝终态）。")
 
 
 if __name__ == "__main__":

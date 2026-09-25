@@ -9,8 +9,10 @@ from .errors import (
     BudgetExhausted,
     PolynomialError,
     ProtocolError,
+    StreamStateError,
     SumcheckError,
     TranscriptFormatError,
+    VerificationFailed,
 )
 from .field import P
 from .polynomial import MAX_TERMS, MAX_VARS, MultilinearPoly, Term
@@ -21,6 +23,14 @@ from .protocol import (
     VerifyResult,
     prove,
     verify,
+)
+from .streaming import (
+    ACCEPTED,
+    AWAITING_CHALLENGE,
+    AWAITING_POLY,
+    REJECTED,
+    StreamState,
+    StreamingVerifier,
 )
 
 __all__ = [
@@ -39,5 +49,13 @@ __all__ = [
     "ProtocolError",
     "TranscriptFormatError",
     "BudgetExhausted",
+    "StreamStateError",
+    "VerificationFailed",
+    "StreamingVerifier",
+    "StreamState",
+    "AWAITING_POLY",
+    "AWAITING_CHALLENGE",
+    "ACCEPTED",
+    "REJECTED",
     "BUDGET_NOTE",
 ]

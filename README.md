@@ -64,8 +64,10 @@ print(result.final_claim, result.direct_evaluation)
 | `MultilinearPoly(num_vars, terms)` | 多线性多项式；构造即校验，重复的变量集合项被**拒绝**（不静默合并） |
 | `prove(poly, challenges, *, claimed_sum=None, eval_budget=None) -> Transcript` | 诚实 prover，逐轮真实枚举剩余布尔立方体 |
 | `verify(poly, transcript) -> VerifyResult` | 先做转录结构校验，再逐轮核对，最后独立直接求值 |
+| `StreamingVerifier(poly, initial_claim)` | 流式验证状态机：逐轮 `submit_round` / `submit_challenge`，见下节 |
+| `StreamState` | 流式状态机的可导出状态（仅公开转录 + 下一轮位置） |
 | `Transcript` / `RoundMessage` / `VerifyResult` | 不可变（frozen dataclass）值对象 |
-| `PolynomialError` / `ProtocolError` / `TranscriptFormatError` / `BudgetExhausted` | 异常类型，公共基类 `SumcheckError` |
+| `PolynomialError` / `ProtocolError` / `TranscriptFormatError` / `BudgetExhausted` / `StreamStateError` / `VerificationFailed` | 异常类型，公共基类 `SumcheckError` |
 
 `RoundMessage` 字段：`index`、`coeffs`（升幂系数 `(a0,)` 或 `(a0,a1)`，
 表示 `g(t)=a0+a1*t`）、`input_claim`、非末轮的 `challenge`/`output_claim`。
@@ -78,6 +80,46 @@ print(result.final_claim, result.direct_evaluation)
 `poly.boolean_sum(eval_budget=None)`（布尔立方体全枚举）、
 `poly.restricted({var: value})`（固定变量后重新压缩下标）、
 `poly.degree_of(var)`（0 或 1）。
+
+## 流式验证状态机
+
+一次性 `verify` 之外，库提供逐轮交互的 `StreamingVerifier`（检查口径与
+`verify` 完全一致，域约束与次数约束不变）：
+
+```python
+from sumcheck import StreamingVerifier
+
+v = StreamingVerifier(poly, initial_claim)   # initial_claim 为规范域整数
+for i in range(poly.num_vars):
+    v.submit_round(coeffs_i)        # 第 i 轮一元多项式系数 (a0,) 或 (a0, a1)
+    v.submit_challenge(r_i)         # 该轮检查通过后再提交本轮挑战
+assert v.state == "accepted"        # 末轮挑战后自动做原多项式直接点值检查
+```
+
+状态机相位：`awaiting_poly` → `awaiting_challenge` →（下一轮）
+`awaiting_poly` → … → `accepted` / `rejected`。规则：
+
+- **严格交替**：挑战未提交前不能收下一轮多项式，也不能重复提交同一轮；
+  顺序错误抛 `StreamStateError`，状态机保持不变、可纠正后继续；
+- **不可恢复的拒绝终态**：任一轮求和关系不闭合（抛 `VerificationFailed`）
+  或系数结构非法（抛 `TranscriptFormatError`，含非规范整数、次数超界）
+  都会进入 `rejected` 终态，此后一切提交抛 `StreamStateError`；
+- **系数必须是域内规范整数**：`[0, 100]` 的非 bool `int`；101、-1、float、
+  bool 一律拒绝，绝不取模掩盖超界输入；
+- **最终直接点值检查**：最后一个挑战提交后，状态机自己计算
+  `f(r_0,…,r_{n-1})` 与最终主张比较，不凭各轮求和关系宣布成功；
+- **挑战值不合法**（如域外整数）抛 `TranscriptFormatError`，状态机保持
+  不变（挑战来自 verifier 侧，视为可修正的调用错误）。
+
+### 暂停与恢复
+
+`v.export_state()` 返回 `StreamState`，**只含公开转录**（初始主张、已提交
+的各轮系数与挑战）**与下一轮位置**，不含累计主张等派生数据；
+`StreamState.to_dict()` 产出可 JSON 序列化的纯 dict。
+`StreamingVerifier.restore(poly, state)` 恢复时**从第 0 轮起重新检查**全部
+已提交部分（含已完成状态的最终直接点值检查），因此篡改导出状态中的任何
+数字都无法让恢复后的验证跳过检查；状态自称进行中但重放失败时，按原始
+检查口径抛出异常。
 
 ## 输入上限（接口边界）
 
@@ -143,9 +185,9 @@ print(result.final_claim, result.direct_evaluation)
 ## 仓库结构
 
 ```
-sumcheck/          被测库（field/polynomial/protocol/errors）
-tests/             unittest 测试 + 独立参考实现 tests/reference.py
-demo.py            固定输入演示：正常接受、上限规模、篡改拒绝、结构异常
+sumcheck/          被测库（field/polynomial/protocol/streaming/errors）
+tests/             unittest 测试（含流式状态机）+ 独立参考实现 tests/reference.py
+demo.py            固定输入演示：正常接受、上限规模、篡改拒绝、结构异常、流式状态机
 README.md
 requirements.txt   仅注释说明标准库；无第三方依赖
 ```

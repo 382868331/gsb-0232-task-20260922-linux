@@ -33,3 +33,20 @@ class BudgetExhausted(SumcheckError, RuntimeError):
     注意与“证明无解/主张为假”区分：预算耗尽是调用者给的计算资源不足，
     证明本身可能完全正确；主张为假则由 verifier 返回拒绝结论。
     """
+
+
+class StreamStateError(ProtocolError):
+    """流式验证状态机的调用顺序错误。
+
+    例如在应提交本轮多项式时提交挑战（或反之）、重复提交同一轮、
+    或在已经进入接受/拒绝终态后继续送入消息。状态机本身不发生变更。
+    """
+
+
+class VerificationFailed(ProtocolError):
+    """流式验证中某一步检查失败，状态机随即进入不可恢复的拒绝终态。
+
+    与 StreamStateError（调用顺序错误，状态不变）区分：
+    本异常表示证明内容本身不成立（求和关系不闭合、最终点值不符等），
+    抛出后该状态机实例不可再继续使用。
+    """
