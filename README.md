@@ -24,11 +24,11 @@ verifier 直接对原多项式在挑战点求值完成判定。
 ## 准确命令
 
 ```bash
-# 必要测试（含独立参考实现对拍、篡改/非法次数/域外数/空变量等边界）
-python -m unittest discover -s tests -v
+# 必要测试（含独立参考实现对拍、流式状态机、篡改/非法次数/域外数/空变量等边界）
+./.venv/bin/python -m unittest discover -s tests -v
 
 # 固定输入演示（实测约 0.04 秒，远低于 8 秒预算；无 sleep、无预录结果）
-python demo.py
+./.venv/bin/python demo.py
 ```
 
 ## 快速上手
@@ -53,6 +53,30 @@ assert result.accepted
 print(result.final_claim, result.direct_evaluation)
 ```
 
+### 流式逐轮验证
+
+`StreamingVerifier` 按调用方到达顺序接收输入：每轮必须先提交多项式系数，
+验证通过后才能提交该轮挑战；非末轮挑战未提交时不会接收下一轮多项式。
+
+```python
+from sumcheck import MultilinearPoly, Term, StreamingVerifier
+
+# f(x0,x1) = 1 + x0*x1；布尔立方体和为 5
+poly = MultilinearPoly(2, [Term(1, ()), Term(1, (0, 1))])
+verifier = StreamingVerifier(poly, initial_claim=5)
+
+verifier.submit_polynomial(0, (2, 1))  # g0(t)=2+t
+verifier.submit_challenge(0, 2)        # g0(2)=4
+verifier.submit_polynomial(1, (1, 2))  # g1(t)=1+2t
+status = verifier.submit_challenge(1, 3)
+assert status.accepted
+assert status.direct_evaluation == 7
+```
+
+`export_state()` 只导出公开的 `num_vars`、`initial_claim`、已提交轮次和
+`next_round`；恢复时调用 `StreamingVerifier.restore(poly, state)`，从第 0 轮
+重新执行所有检查并重建累计主张，因此直接改写状态中的累计结果不会被信任。
+
 ## 公开接口与数据结构
 
 全部从 `sumcheck` 包导入：
@@ -64,7 +88,11 @@ print(result.final_claim, result.direct_evaluation)
 | `MultilinearPoly(num_vars, terms)` | 多线性多项式；构造即校验，重复的变量集合项被**拒绝**（不静默合并） |
 | `prove(poly, challenges, *, claimed_sum=None, eval_budget=None) -> Transcript` | 诚实 prover，逐轮真实枚举剩余布尔立方体 |
 | `verify(poly, transcript) -> VerifyResult` | 先做转录结构校验，再逐轮核对，最后独立直接求值 |
+| `StreamingVerifier(poly, initial_claim)` | 流式验证状态机；多项式通过后才允许提交本轮挑战 |
+| `submit_polynomial(round_index, coeffs)` / `submit_challenge(round_index, challenge)` | 逐轮提交；返回当前 `StreamingStatus` |
+| `export_state()` / `StreamingVerifier.restore(...)` | 暂停导出和重放恢复；恢复不信任状态内累计主张 |
 | `Transcript` / `RoundMessage` / `VerifyResult` | 不可变（frozen dataclass）值对象 |
+| `StreamRound` / `StreamingVerifierState` / `StreamingStatus` | 流式公开轮次、可恢复状态和状态视图 |
 | `PolynomialError` / `ProtocolError` / `TranscriptFormatError` / `BudgetExhausted` | 异常类型，公共基类 `SumcheckError` |
 
 `RoundMessage` 字段：`index`、`coeffs`（升幂系数 `(a0,)` 或 `(a0,a1)`，
@@ -100,6 +128,11 @@ print(result.final_claim, result.direct_evaluation)
   （前序挑战限制后）多项式中的实际次数**，抛 `TranscriptFormatError`；
 - **结构合法但主张为假**（系数篡改、轮间不闭合、最终点值不符）不抛异常，
   返回 `accepted=False` 与**首个失败轮**；
+- **流式验证失败进入不可恢复终态**：轮次颠倒/重复、上一轮挑战缺失、域外系数、
+  次数超限、轮求和不闭合、最终点值不符都会令 `phase="rejected"`；之后继续发送
+  任何消息也保持拒绝；状态结构本身损坏时 `restore` 抛 `ProtocolError`；
+- **流式恢复必须重放**：导出状态没有输入/输出累计主张字段；恢复时从开头重算，
+  篡改公开系数或挑战会在重放中重新被拒绝；
 - **空变量**：`prove`/`verify` 抛 `ProtocolError`；
 - **有状态/失败原子性**：`prove` 是纯函数，失败时抛异常且不返回半成品转录，
   输入对象不被修改；转录为不可变对象，篡改只能通过构造新对象完成；

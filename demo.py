@@ -19,6 +19,7 @@ from dataclasses import replace
 
 from sumcheck import (
     MultilinearPoly,
+    StreamingVerifier,
     Term,
     TranscriptFormatError,
     prove,
@@ -33,6 +34,20 @@ def build_poly(n, raw_terms):
 
 
 def main() -> None:
+    print("=" * 70)
+    print("演示 0：两变量流式状态机 —— f(x0,x1) = 1 + x0*x1")
+    print("=" * 70)
+    stream_poly = build_poly(2, [(1, ()), (1, (0, 1))])
+    verifier = StreamingVerifier(stream_poly, 5)
+    print("提交轮 0 多项式 (2,1):", verifier.submit_polynomial(0, (2, 1)).phase)
+    print("提交轮 0 挑战 2，输出主张:", verifier.submit_challenge(0, 2).output_claim)
+    print("提交轮 1 多项式 (1,2):", verifier.submit_polynomial(1, (1, 2)).phase)
+    stream_status = verifier.submit_challenge(1, 3)
+    print(f"提交轮 1 挑战 3: accepted={stream_status.accepted}, "
+          f"直接求值={stream_status.direct_evaluation}")
+    assert stream_status.accepted and stream_status.direct_evaluation == 7
+
+    print()
     print("=" * 70)
     print("演示 1：正常接受 —— f(x0,x1,x2) = 3 + 2*x0 + x1 + x0*x2")
     print("=" * 70)
@@ -127,7 +142,8 @@ def main() -> None:
         raise AssertionError("非法次数必须被拒绝")
 
     print()
-    print("全部演示完成：1 个正常接受、1 个上限规模接受、1 个篡改拒绝、2 个结构异常。")
+    print("全部演示完成：1 个流式接受、1 个批量正常接受、1 个上限规模接受、"
+          "1 个篡改拒绝、2 个结构异常。")
 
 
 if __name__ == "__main__":

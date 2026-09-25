@@ -31,6 +31,11 @@ BUDGET_NOTE = (
     "本协议不存在搜索过程：honest prover 对真主张总能在 2^n 预算内完成。"
 )
 
+AWAITING_POLYNOMIAL = "awaiting_polynomial"
+AWAITING_CHALLENGE = "awaiting_challenge"
+ACCEPTED = "accepted"
+REJECTED = "rejected"
+
 
 def _check_challenges(challenges, num_vars: int) -> tuple[int, ...]:
     if isinstance(challenges, (str, bytes)) or not hasattr(challenges, "__len__"):
@@ -129,6 +134,311 @@ class VerifyResult:
     final_claim: int
     direct_evaluation: int
     rounds_checked: int = 0
+
+
+@dataclass(frozen=True)
+class StreamRound:
+    """流式公开转录中的一轮：仅包含调用方提交的多项式系数与挑战。"""
+
+    index: int
+    coeffs: tuple[int, ...]
+    challenge: int | None = None
+
+
+@dataclass(frozen=True)
+class StreamingVerifierState:
+    """可暂停/恢复的公开状态，不包含任何可直接改写的累计主张。
+
+    恢复方必须从第 0 轮重放 ``rounds``，重新计算每轮输入/输出主张。
+    """
+
+    num_vars: int
+    initial_claim: int
+    rounds: tuple[StreamRound, ...]
+    next_round: int
+
+
+@dataclass(frozen=True)
+class StreamingStatus:
+    """一次流式提交后的状态视图。"""
+
+    phase: str
+    next_round: int
+    rejected: bool = False
+    accepted: bool = False
+    reason: str | None = None
+    output_claim: int | None = None
+    direct_evaluation: int | None = None
+
+
+class StreamingVerifier:
+    """逐轮接收多项式和挑战的 sum-check 验证状态机。
+
+    正确顺序为：提交第 ``i`` 轮多项式，通过后提交第 ``i`` 轮挑战；非末轮
+    随后才能提交第 ``i+1`` 轮多项式。任何顺序、域外值、次数或主张错误都会
+    使状态机进入不可恢复的 ``rejected`` 终态。
+    """
+
+    def __init__(self, poly: MultilinearPoly, initial_claim: int):
+        if not isinstance(poly, MultilinearPoly):
+            raise ProtocolError(f"poly 必须为 MultilinearPoly，实际为 {type(poly).__name__}")
+        if poly.num_vars == 0:
+            raise ProtocolError("空变量多项式无法运行 sum-check：num_vars 至少为 1")
+        self._poly = poly
+        self._initial_claim = check_field_element(initial_claim, "initial_claim")
+        self._rounds: list[StreamRound] = []
+        self._input_claims: list[int] = []
+        self._output_claims: list[int] = []
+        self._current_claim = self._initial_claim
+        self._next_round = 0
+        self._phase = AWAITING_POLYNOMIAL
+        self._reason: str | None = None
+
+    @property
+    def phase(self) -> str:
+        return self._phase
+
+    @property
+    def next_round(self) -> int:
+        return self._next_round
+
+    @property
+    def is_rejected(self) -> bool:
+        return self._phase == REJECTED
+
+    @property
+    def is_accepted(self) -> bool:
+        return self._phase == ACCEPTED
+
+    @property
+    def reason(self) -> str | None:
+        return self._reason
+
+    @property
+    def status(self) -> StreamingStatus:
+        output = self._output_claims[-1] if self._output_claims else None
+        direct = None
+        if self._phase == ACCEPTED:
+            output = self._current_claim
+            direct = self._current_claim
+        return StreamingStatus(
+            self._phase,
+            self._next_round,
+            self._phase == REJECTED,
+            self._phase == ACCEPTED,
+            self._reason,
+            output,
+            direct,
+        )
+
+    @classmethod
+    def restore(cls, poly: MultilinearPoly, state: StreamingVerifierState) -> "StreamingVerifier":
+        """从公开状态恢复，并重放全部已提交轮次以重建内部累计主张。"""
+        if not isinstance(state, StreamingVerifierState):
+            raise ProtocolError(
+                f"state 必须为 StreamingVerifierState，实际为 {type(state).__name__}"
+            )
+        if isinstance(state.num_vars, bool) or not isinstance(state.num_vars, int):
+            raise ProtocolError("state.num_vars 必须为非 bool 整数")
+        if not isinstance(state.rounds, tuple):
+            raise ProtocolError("state.rounds 必须为 tuple")
+        if isinstance(state.next_round, bool) or not isinstance(state.next_round, int):
+            raise ProtocolError("state.next_round 必须为非 bool 整数")
+
+        verifier = cls(poly, state.initial_claim)
+        if state.num_vars != poly.num_vars:
+            raise ProtocolError(
+                f"state.num_vars={state.num_vars} 与多项式变量数 {poly.num_vars} 不一致"
+            )
+        if not 0 <= state.next_round <= poly.num_vars:
+            raise ProtocolError(f"state.next_round={state.next_round} 超出允许范围")
+
+        expected_index = 0
+        for position, record in enumerate(state.rounds):
+            if not isinstance(record, StreamRound):
+                raise ProtocolError(
+                    f"state.rounds[{position}] 必须为 StreamRound，实际为 {type(record).__name__}"
+                )
+            if record.index != expected_index:
+                verifier._reject(
+                    f"轮次顺序错误：状态位置 {position} 记录为轮 {record.index}，"
+                    f"应提交轮 {expected_index}"
+                )
+                return verifier
+            verifier.submit_polynomial(record.index, record.coeffs)
+            if verifier.is_rejected:
+                return verifier
+            if record.challenge is not None:
+                verifier.submit_challenge(record.index, record.challenge)
+                if verifier.is_rejected:
+                    return verifier
+            elif state.rounds[position + 1:]:
+                verifier._reject(f"轮 {record.index} 的挑战未提交，不能收下一轮")
+                return verifier
+            expected_index += 1
+
+        if verifier._next_round != state.next_round:
+            raise ProtocolError(
+                f"state.next_round={state.next_round} 与重放结果 {verifier._next_round} 不一致"
+            )
+        return verifier
+
+    def export_state(self) -> StreamingVerifierState:
+        """导出公开转录和下一轮位置；拒绝终态不可导出。"""
+        if self._phase == REJECTED:
+            raise ProtocolError("验证器已处于不可恢复的拒绝终态，不能导出状态")
+        return StreamingVerifierState(
+            self._poly.num_vars,
+            self._initial_claim,
+            tuple(StreamRound(r.index, r.coeffs, r.challenge) for r in self._rounds),
+            self._next_round,
+        )
+
+    def submit_polynomial(self, round_index: int, coeffs) -> StreamingStatus:
+        """提交并立即验证一轮一元多项式。"""
+        if self._terminal():
+            return self.status
+        if self._phase != AWAITING_POLYNOMIAL:
+            return self._reject(f"轮 {self._next_round} 的挑战未提交，不能收下一轮")
+        if isinstance(round_index, bool) or not isinstance(round_index, int):
+            return self._reject(
+                f"轮次必须为非 bool 整数，实际为 {type(round_index).__name__}"
+            )
+        if round_index != self._next_round:
+            return self._reject(
+                f"轮次顺序错误：当前应提交轮 {self._next_round}，实际收到轮 {round_index}"
+            )
+
+        error = self._validate_coefficients(round_index, coeffs)
+        if error is not None:
+            return self._reject(error)
+        normalized = tuple(coeffs)
+
+        g0 = self._eval(normalized, 0)
+        g1 = self._eval(normalized, 1)
+        actual_sum = (g0 + g1) % P
+        if actual_sum != self._current_claim:
+            return self._reject(
+                f"轮 {round_index} 主张不闭合：g{round_index}(0)+g{round_index}(1)="
+                f"{actual_sum}，要求等于上一主张 {self._current_claim}"
+            )
+
+        self._rounds.append(StreamRound(round_index, normalized))
+        self._input_claims.append(self._current_claim)
+        self._phase = AWAITING_CHALLENGE
+        return self.status
+
+    def submit_challenge(self, round_index: int, challenge: int) -> StreamingStatus:
+        """在某轮多项式验证通过后提交该轮挑战。"""
+        if self._terminal():
+            return self.status
+        if self._phase != AWAITING_CHALLENGE:
+            return self._reject("当前轮尚未提交并通过多项式验证，不能提交挑战")
+        if isinstance(round_index, bool) or not isinstance(round_index, int):
+            return self._reject(
+                f"轮次必须为非 bool 整数，实际为 {type(round_index).__name__}"
+            )
+        expected_index = self._next_round
+        if round_index != expected_index:
+            return self._reject(
+                f"轮次顺序错误：当前应提交轮 {expected_index} 的挑战，实际收到轮 {round_index}"
+            )
+        try:
+            challenge = check_field_element(challenge, f"challenges[{round_index}]")
+        except (TypeError, ValueError) as exc:
+            return self._reject(str(exc))
+
+        coeffs = self._rounds[-1].coeffs
+        output_claim = self._eval(coeffs, challenge)
+        self._rounds[-1] = StreamRound(expected_index, coeffs, challenge)
+        self._output_claims.append(output_claim)
+
+        if expected_index == self._poly.num_vars - 1:
+            self._current_claim = output_claim
+            direct = self._poly.evaluate(
+                tuple(record.challenge for record in self._rounds)
+            )
+            if direct != output_claim:
+                return self._reject(
+                    f"最终直接点值检查失败：f(r_0..r_{self._poly.num_vars - 1})={direct}，"
+                    f"最终主张={output_claim}"
+                )
+            self._next_round = self._poly.num_vars
+            self._phase = ACCEPTED
+            self._reason = None
+            return self.status
+
+        self._current_claim = output_claim
+        self._next_round += 1
+        self._phase = AWAITING_POLYNOMIAL
+        return self.status
+
+    def to_transcript(self) -> Transcript:
+        """接受后转换为旧的一次性批量验证转录。"""
+        if self._phase != ACCEPTED:
+            raise ProtocolError("只有已接受的流式验证才能转换为完整转录")
+        challenges = tuple(record.challenge for record in self._rounds)
+        messages = []
+        for i, record in enumerate(self._rounds):
+            if i < self._poly.num_vars - 1:
+                messages.append(RoundMessage(
+                    i, record.coeffs, self._input_claims[i],
+                    record.challenge, self._output_claims[i],
+                ))
+            else:
+                messages.append(RoundMessage(
+                    i, record.coeffs, self._input_claims[i], None, None
+                ))
+        return Transcript(
+            self._poly.num_vars,
+            self._initial_claim,
+            tuple(messages),
+            challenges,
+            self._current_claim,
+        )
+
+    def _terminal(self) -> bool:
+        return self._phase in (ACCEPTED, REJECTED)
+
+    def _reject(self, reason: str) -> StreamingStatus:
+        self._phase = REJECTED
+        self._reason = reason
+        return self.status
+
+    def _validate_coefficients(self, round_index: int, coeffs) -> str | None:
+        if not isinstance(coeffs, tuple):
+            return f"轮 {round_index} 系数必须为 tuple，实际为 {type(coeffs).__name__}"
+        if len(coeffs) not in (1, 2):
+            return (
+                f"轮 {round_index} 系数长度 {len(coeffs)} 对应次数 "
+                f"{len(coeffs) - 1}，超过多线性允许的次数 1"
+            )
+        prior = {
+            record.index: record.challenge
+            for record in self._rounds
+            if record.challenge is not None
+        }
+        restricted = self._poly.restricted(prior) if prior else self._poly
+        bound = restricted.degree_of(0)
+        declared_degree = len(coeffs) - 1
+        if declared_degree > bound:
+            return (
+                f"轮 {round_index} 声明次数 {declared_degree} 超过变量 X_{round_index} "
+                f"在当前多项式中的实际次数 {bound}"
+            )
+        for j, coeff in enumerate(coeffs):
+            try:
+                check_field_element(coeff, f"rounds[{round_index}].coeffs[{j}]")
+            except (TypeError, ValueError) as exc:
+                return str(exc)
+        return None
+
+    @staticmethod
+    def _eval(coeffs: tuple[int, ...], x: int) -> int:
+        value = coeffs[0]
+        if len(coeffs) == 2:
+            value = (value + coeffs[1] * x) % P
+        return value
 
 
 def prove(
