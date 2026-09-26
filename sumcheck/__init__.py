@@ -16,11 +16,16 @@ from .field import P
 from .polynomial import MAX_TERMS, MAX_VARS, MultilinearPoly, Term
 from .protocol import (
     BUDGET_NOTE,
+    PartialRoundMessage,
+    PartialTranscript,
+    PartialVerifyResult,
     RoundMessage,
     Transcript,
     VerifyResult,
     prove,
+    prove_partial,
     verify,
+    verify_partial,
 )
 
 __all__ = [
@@ -31,10 +36,15 @@ __all__ = [
     "MultilinearPoly",
     "PolynomialError",
     "RoundMessage",
+    "PartialRoundMessage",
     "Transcript",
+    "PartialTranscript",
     "VerifyResult",
+    "PartialVerifyResult",
     "prove",
+    "prove_partial",
     "verify",
+    "verify_partial",
     "SumcheckError",
     "ProtocolError",
     "TranscriptFormatError",

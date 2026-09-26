@@ -95,3 +95,40 @@ def ref_expected_transcript_values(spec, challenges) -> dict:
         "final_claim": final_claim,
         "direct_evaluation": direct,
     }
+
+
+def ref_partial_sum(spec, sum_variables, retained_point) -> int:
+    """独立枚举指定求和变量的布尔赋值；保留变量固定在公开点。"""
+    n, _ = spec
+    total = 0
+    for mask in range(1 << len(sum_variables)):
+        point = [0] * n
+        for var, value in retained_point.items():
+            point[var] = value
+        for pos, var in enumerate(sum_variables):
+            point[var] = (mask >> pos) & 1
+        total = _norm(total + ref_eval(spec, tuple(point)))
+    return total
+
+
+def ref_partial_round(spec, sum_variables, retained_point, prior_challenges):
+    """独立计算部分求和第 i 轮关于 sum_variables[i] 的 (a0, a1)。"""
+    i = len(prior_challenges)
+    fixed = dict(retained_point)
+    fixed.update({var: value for var, value in zip(sum_variables, prior_challenges)})
+    fixed[sum_variables[i]] = 0
+    a0 = _fixed_eval(spec, fixed)
+    fixed[sum_variables[i]] = 1
+    a1 = _norm(_fixed_eval(spec, fixed) - a0)
+    return a0, a1
+
+
+def ref_partial_point(spec, sum_variables, retained_point, challenges):
+    """独立构造公开点 + 求和变量挑战点后的完整求值点。"""
+    n, _ = spec
+    point = [0] * n
+    for var, value in retained_point.items():
+        point[var] = value
+    for var, value in zip(sum_variables, challenges):
+        point[var] = value
+    return tuple(point)
